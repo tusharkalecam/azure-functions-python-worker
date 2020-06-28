@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License.
 """GRPC client.
 
 Implements loading and execution of Python workers.
@@ -85,10 +87,10 @@ class Dispatcher(metaclass=DispatcherMeta):
 
     @classmethod
     async def connect(cls, host, port, worker_id, request_id,
-                      connect_timeout, max_msg_len=None):
+                      connect_timeout):
         loop = asyncio._get_running_loop()
         disp = cls(loop, host, port, worker_id, request_id,
-                   connect_timeout, max_msg_len)
+                   connect_timeout)
         disp._grpc_thread.start()
         await disp._grpc_connected_fut
         logger.info('Successfully opened gRPC channel to %s:%s', host, port)
