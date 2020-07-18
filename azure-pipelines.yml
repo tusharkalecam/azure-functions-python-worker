@@ -41,8 +41,16 @@ jobs:
         linuxServiceBus: $(LinuxServiceBusConnectionString37)
         linuxEventGridTopicUri: $(LinuxEventGridTopicUriString37)
         linuxEventGridConnectionKey: $(LinuxEventGridConnectionKeyString37)
-      Python38:
-        pythonVersion: '3.8'
+#      Python38:
+#        pythonVersion: '3.8'
+#        linuxStorage: $(LinuxStorageConnectionString38)
+#        linuxCosmosDB: $(LinuxCosmosDBConnectionString38)
+#        linuxEventHub: $(LinuxEventHubConnectionString38)
+#        linuxServiceBus: $(LinuxServiceBusConnectionString38)
+#        linuxEventGridTopicUri: $(LinuxEventGridTopicUriString38)
+#        linuxEventGridConnectionKey: $(LinuxEventGridConnectionKeyString38)
+      Python39:
+        pythonVersion: '3.9'
         linuxStorage: $(LinuxStorageConnectionString38)
         linuxCosmosDB: $(LinuxCosmosDBConnectionString38)
         linuxEventHub: $(LinuxEventHubConnectionString38)
