@@ -37,7 +37,7 @@ from .utils.tracing import marshall_exception_trace
 from .utils.wrappers import disable_feature_by
 from asyncio import BaseEventLoop
 from logging import LogRecord
-from typing import Optional
+from typing import Optional, Dict, Callable, Any
 
 
 class DispatcherMeta(type):
@@ -75,6 +75,14 @@ class Dispatcher(metaclass=DispatcherMeta):
         self._sync_call_tp: concurrent.futures.Executor = (
             concurrent.futures.ThreadPoolExecutor(
                 max_workers=self._sync_tp_max_workers))
+
+        # We allow the customer asynchronous code to be run inside an
+        # asynchronous thread pool
+        self._async_call_tp: concurrent.futures.Executor = (
+            concurrent.futures.ThreadPoolExecutor(
+                max_workers=self._async_tp_max_workers))
+        # A mapping between invocation id and async function call task
+        self._async_call_futures: Dict[str, asyncio.Future] = {}
 
         self._grpc_connect_timeout: float = grpc_connect_timeout
         # This is set to -1 by default to remove the limitation on msg size
@@ -339,7 +347,8 @@ class Dispatcher(metaclass=DispatcherMeta):
                 logger.info('Function is async, request ID: %s,'
                             'function ID: %s, invocation ID: %s',
                             self.request_id, function_id, invocation_id)
-                call_result = await fi.func(**args)
+                self._add_to_async_pool(invocation_id, fi.func, args)
+                call_result = await self._get_call_result(invocation_id)
             else:
                 logger.info('Function is sync, request ID: %s,'
                             'function ID: %s, invocation ID: %s',
@@ -480,6 +489,30 @@ class Dispatcher(metaclass=DispatcherMeta):
             logger.info('Changing current working directory to %s', new_cwd)
         else:
             logger.warning('Directory %s is not found when reloading', new_cwd)
+
+    def _add_to_async_pool(self, invocation_id: str,
+                           func: Callable, func_args: Dict[str, Any]):
+        future = self._async_call_tp.submit(func, **func_args)
+        self._async_call_futures[invocation_id] = future
+
+    async def _get_call_result(self, invocation_id: str) -> Any:
+        future = self._async_call_futures.get(invocation_id)
+        del self._async_call_futures[invocation_id]
+
+        if future is None:
+            raise Exception(f'Invocation {invocation_id} is not found'
+                            ' in async threadpool')
+
+        while not future.done():
+            await asyncio.sleep(0)
+
+        if future.cancelled():
+            raise Exception(f'Invocation {invocation_id} is cancelled')
+
+        if future.exception():
+            raise future.exception()
+
+        return future.result()
 
     def _get_sync_tp_max_workers(self) -> int:
         def tp_max_workers_validator(value: str) -> bool:
