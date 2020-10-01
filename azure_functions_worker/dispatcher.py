@@ -80,9 +80,10 @@ class Dispatcher(metaclass=DispatcherMeta):
         # asynchronous thread pool
         self._async_call_tp: concurrent.futures.Executor = (
             concurrent.futures.ThreadPoolExecutor(
-                max_workers=self._async_tp_max_workers))
+                max_workers=self._sync_tp_max_workers))
         # A mapping between invocation id and async function call task
-        self._async_call_futures: Dict[str, asyncio.Future] = {}
+        self._async_call_tasks: Dict[str, asyncio.Task] = {}
+        self._async_call_loop: asyncio.BaseEventLoop = asyncio.get_event_loop()
 
         self._grpc_connect_timeout: float = grpc_connect_timeout
         # This is set to -1 by default to remove the limitation on msg size
@@ -347,7 +348,7 @@ class Dispatcher(metaclass=DispatcherMeta):
                 logger.info('Function is async, request ID: %s,'
                             'function ID: %s, invocation ID: %s',
                             self.request_id, function_id, invocation_id)
-                self._add_to_async_pool(invocation_id, fi.func, args)
+                await self._add_to_async_pool(invocation_id, fi.func, args)
                 call_result = await self._get_call_result(invocation_id)
             else:
                 logger.info('Function is sync, request ID: %s,'
@@ -490,29 +491,23 @@ class Dispatcher(metaclass=DispatcherMeta):
         else:
             logger.warning('Directory %s is not found when reloading', new_cwd)
 
-    def _add_to_async_pool(self, invocation_id: str,
-                           func: Callable, func_args: Dict[str, Any]):
-        future = self._async_call_tp.submit(func, **func_args)
-        self._async_call_futures[invocation_id] = future
+    async def _add_to_async_pool(self, invocation_id: str,
+                                 func: Callable, func_args: Dict[str, Any]):
+        task = asyncio.ensure_future(func(func_args),
+                                     loop=self._async_call_loop)
+        self._async_call_tasks[invocation_id] = task
+        await asyncio.sleep(0)
 
     async def _get_call_result(self, invocation_id: str) -> Any:
-        future = self._async_call_futures.get(invocation_id)
-        del self._async_call_futures[invocation_id]
+        task: asyncio.Task = self._async_call_tasks.get(invocation_id)
 
-        if future is None:
-            raise Exception(f'Invocation {invocation_id} is not found'
-                            ' in async threadpool')
+        if task is None:
+            raise Exception(f'Invocation {invocation_id} is not found '
+                            'in async threadpool')
+        else:
+            del self._async_call_tasks[invocation_id]
 
-        while not future.done():
-            await asyncio.sleep(0)
-
-        if future.cancelled():
-            raise Exception(f'Invocation {invocation_id} is cancelled')
-
-        if future.exception():
-            raise future.exception()
-
-        return future.result()
+        return await task
 
     def _get_sync_tp_max_workers(self) -> int:
         def tp_max_workers_validator(value: str) -> bool:
