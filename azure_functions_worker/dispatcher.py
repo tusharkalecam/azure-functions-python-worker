@@ -15,6 +15,7 @@ import os
 import sys
 import importlib
 import inspect
+from functools import partial
 
 import grpc
 
@@ -338,66 +339,25 @@ class Dispatcher(metaclass=DispatcherMeta):
                 for name in fi.output_types:
                     args[name] = bindings.Out()
 
-            if fi.is_async:
-                logger.info('Function is async, request ID: %s,'
-                            'function ID: %s, invocation ID: %s',
-                            self.request_id, function_id, invocation_id)
-                call_result = await fi.func(**args)
-            else:
-                logger.info('Function is sync, request ID: %s,'
-                            'function ID: %s, invocation ID: %s',
-                            self.request_id, function_id, invocation_id)
-                call_result = self._mp.register(fi.func, args)
+            logger.info('Function is async: %s, request ID: %s,'
+                        'function ID: %s, invocation ID: %s',
+                        fi.is_async, self.request_id,
+                        function_id, invocation_id)
+            callback = partial(
+                self._handle__invocation_request_continuation,
+                fi, args, req, function_id,
+                self._grpc_resp_queue.put_nowait, invocation_id)
+            await self._mp.register2(
+                invocation_id=invocation_id,
+                is_async=fi.is_async,
+                func=fi.func,
+                func_kwargs=args,
+                successful_callback=callback
+            )
 
-                #await self._loop.run_in_executor(
-                #    self._sync_call_tp,
-                #    self.__run_sync_func, invocation_id, fi.func, args)
-            if call_result is not None and not fi.has_return:
-                raise RuntimeError(
-                    f'function {fi.name!r} without a $return binding '
-                    f'returned a non-None value')
-
-            output_data = []
-            if fi.output_types:
-                for out_name, out_type_info in fi.output_types.items():
-                    val = args[out_name].get()
-                    if val is None:
-                        # TODO: is the "Out" parameter optional?
-                        # Can "None" be marshaled into protos.TypedData?
-                        continue
-
-                    rpc_val = bindings.to_outgoing_proto(
-                        out_type_info.binding_name, val,
-                        pytype=out_type_info.pytype)
-                    assert rpc_val is not None
-
-                    output_data.append(
-                        protos.ParameterBinding(
-                            name=out_name,
-                            data=rpc_val))
-
-            return_value = None
-            if fi.return_type is not None:
-                return_value = bindings.to_outgoing_proto(
-                    fi.return_type.binding_name, call_result,
-                    pytype=fi.return_type.pytype)
-
-            # Actively flush customer print() function to console
-            sys.stdout.flush()
-
-            logger.info('Successfully processed FunctionInvocationRequest, '
-                        'request ID: %s, function ID: %s, invocation ID: %s',
-                        self.request_id, function_id, invocation_id)
-
-            return protos.StreamingMessage(
-                request_id=self.request_id,
-                invocation_response=protos.InvocationResponse(
-                    invocation_id=invocation_id,
-                    return_value=return_value,
-                    result=protos.StatusResult(
-                        status=protos.StatusResult.Success),
-                    output_data=output_data))
-
+            # await self._loop.run_in_executor(
+            #     self._sync_call_tp,
+            #     self.__run_sync_func, invocation_id, fi.func, args)
         except Exception as ex:
             return protos.StreamingMessage(
                 request_id=self.request_id,
@@ -406,6 +366,55 @@ class Dispatcher(metaclass=DispatcherMeta):
                     result=protos.StatusResult(
                         status=protos.StatusResult.Failure,
                         exception=self._serialize_exception(ex))))
+
+    async def _handle__invocation_request_continuation(
+        self, fi, args, req, function_id, put_nowait, invocation_id, call_result
+    ):
+        if call_result is not None and not fi.has_return:
+            raise RuntimeError(
+                f'function {fi.name!r} without a $return binding '
+                f'returned a non-None value')
+
+        output_data = []
+        if fi.output_types:
+            for out_name, out_type_info in fi.output_types.items():
+                val = args[out_name].get()
+                if val is None:
+                    # TODO: is the "Out" parameter optional?
+                    # Can "None" be marshaled into protos.TypedData?
+                    continue
+
+                rpc_val = bindings.to_outgoing_proto(
+                    out_type_info.binding_name, val,
+                    pytype=out_type_info.pytype)
+                assert rpc_val is not None
+
+                output_data.append(
+                    protos.ParameterBinding(
+                        name=out_name,
+                        data=rpc_val))
+
+        return_value = None
+        if fi.return_type is not None:
+            return_value = bindings.to_outgoing_proto(
+                fi.return_type.binding_name, call_result,
+                pytype=fi.return_type.pytype)
+
+        # Actively flush customer print() function to console
+        sys.stdout.flush()
+
+        logger.info('Successfully processed FunctionInvocationRequest, '
+                    'request ID: %s, function ID: %s, invocation ID: %s',
+                    self.request_id, function_id, invocation_id)
+
+        await put_nowait(protos.StreamingMessage(
+            request_id=self.request_id,
+            invocation_response=protos.InvocationResponse(
+                invocation_id=invocation_id,
+                return_value=return_value,
+                result=protos.StatusResult(
+                    status=protos.StatusResult.Success),
+                output_data=output_data)))
 
     async def _handle__function_environment_reload_request(self, req):
         '''Only runs on Linux Consumption placeholder specialization.'''
