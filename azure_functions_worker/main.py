@@ -4,6 +4,7 @@
 
 
 import argparse
+from multiprocessing.process import current_process
 
 from . import dispatcher
 from . import logging
@@ -38,14 +39,23 @@ def parse_args():
 def main():
     args = parse_args()
     logging.setup(log_level=args.log_level, log_destination=args.log_to)
-
     logger.info('Starting Azure Functions Python Worker.')
     logger.info('Worker ID: %s, Request ID: %s, Host Address: %s:%s',
                 args.worker_id, args.request_id, args.host, args.port)
 
     try:
-        return aio_compat.run(start_async(
-            args.host, args.port, args.worker_id, args.request_id))
+        process_name = current_process().name
+        logger.info(f'current_process() {process_name}')
+        if process_name == 'MainProcess':
+            return aio_compat.run(
+                start_async(
+                    args.host, args.port,
+                    args.worker_id,
+                    args.request_id
+                )
+            )
+        else:
+            return 'ok'
     except Exception:
         error_logger.exception('unhandled error in functions worker')
         raise

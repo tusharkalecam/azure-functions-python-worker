@@ -6,7 +6,8 @@ Implements loading and execution of Python workers.
 """
 
 import asyncio
-import concurrent.futures
+from concurrent.futures.thread import ThreadPoolExecutor
+from concurrent.futures.process import ProcessPoolExecutor
 import logging
 import queue
 import threading
@@ -30,6 +31,7 @@ from .constants import (
     PYTHON_THREADPOOL_THREAD_COUNT_MIN,
     PYTHON_THREADPOOL_THREAD_COUNT_MAX
 )
+from .multip import Multip
 from .logging import error_logger, logger, is_system_log_category
 from .logging import enable_console_logging, disable_console_logging
 from .utils.common import get_app_setting
@@ -72,9 +74,10 @@ class Dispatcher(metaclass=DispatcherMeta):
         # We allow the customer to change synchronous thread pool count by
         # PYTHON_THREADPOOL_THREAD_COUNT app setting. The default value is 1.
         self._sync_tp_max_workers: int = self._get_sync_tp_max_workers()
-        self._sync_call_tp: concurrent.futures.Executor = (
-            concurrent.futures.ThreadPoolExecutor(
+        self._sync_call_tp: ThreadPoolExecutor = (
+            ThreadPoolExecutor(
                 max_workers=self._sync_tp_max_workers))
+        self._mp = Multip(self._sync_tp_max_workers)
 
         self._grpc_connect_timeout: float = grpc_connect_timeout
         # This is set to -1 by default to remove the limitation on msg size
@@ -344,9 +347,11 @@ class Dispatcher(metaclass=DispatcherMeta):
                 logger.info('Function is sync, request ID: %s,'
                             'function ID: %s, invocation ID: %s',
                             self.request_id, function_id, invocation_id)
-                call_result = await self._loop.run_in_executor(
-                    self._sync_call_tp,
-                    self.__run_sync_func, invocation_id, fi.func, args)
+                call_result = self._mp.register(fi.func, args)
+
+                #await self._loop.run_in_executor(
+                #    self._sync_call_tp,
+                #    self.__run_sync_func, invocation_id, fi.func, args)
             if call_result is not None and not fi.has_return:
                 raise RuntimeError(
                     f'function {fi.name!r} without a $return binding '
